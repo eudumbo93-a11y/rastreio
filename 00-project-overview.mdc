@@ -1,0 +1,67 @@
+---
+description: Visao geral, escopo e principios do SaaS de rastreio
+alwaysApply: true
+---
+
+# SaaS de Rastreio - Visao Geral
+
+## O que e
+
+Plataforma multi-tenant que recebe pedidos de e-commerces (sellers) via API e
+cuida do **pos-venda**: status do pedido, geracao/leitura de codigo de rastreio,
+notificacoes automaticas por e-mail e SMS, e pagina publica de rastreio com
+white-label (subdominio do seller).
+
+## Mercado-alvo
+
+- Sellers e dropshippers da **Europa**, com foco inicial em **Portugal** e
+  Espanha. Idiomas iniciais: PT-PT, EN, ES.
+- Transportadoras-alvo (integracao real, depois): CTT, DPD, GLS, Correos,
+  Seur, Hermes, Royal Mail. Pode usar agregador (17Track, AfterShip) para
+  cobrir varias de uma vez.
+
+## O que vamos construir (em ordem)
+
+1. **Core SaaS multi-tenant** (auth, API keys, ingestao de pedidos, fila).
+2. **Notification Engine** (e-mail + SMS, templates por seller, multi-idioma).
+3. **CarrierProvider** comecando com `MockCarrierProvider` para
+   desenvolvimento e testes (gera codigo fake `LX123456789PT` e eventos
+   simulados em datas crescentes).
+4. **Pagina publica de rastreio** white-label (subdominio do seller).
+5. **Painel do seller** (Next.js): pedidos, templates, dominios, billing.
+6. **Billing** com Stripe (planos por volume).
+7. **Integracoes reais** de transportadoras, substituindo o mock provider.
+
+## O que NAO e e nao sera construido
+
+> Esta secao e obrigatoria. Nao implementar nada abaixo.
+
+- **Nao** geramos codigos de rastreio falsos para enviar a clientes finais
+  reais em producao. O `MockCarrierProvider` e exclusivamente para
+  desenvolvimento, testes automatizados e ambiente de staging.
+- **Nao** simulamos movimentacoes inexistentes (ex: "saiu para entrega")
+  quando nao houve postagem real. Em producao, eventos vem de transportadora
+  real ou agregador.
+- **Nao** enviamos e-mail/SMS afirmando "encomenda enviada" se nao houver
+  shipment real associado.
+- O sistema deve **bloquear por design** o uso do mock em ambiente de
+  producao (variavel `NODE_ENV=production` impede selecao do mock).
+
+## Principios
+
+- **Multi-tenant por design**: tudo isolado por `tenant_id`. Nunca ha consulta
+  sem esse filtro.
+- **Idempotencia**: ingestao de pedidos e webhooks de transportadora devem
+  ser idempotentes (chave `external_id` + `tenant_id`).
+- **Async first**: trabalho lento (envio de e-mail, polling de carrier) vai
+  para fila. API publica responde rapido.
+- **GDPR-first**: dados pessoais minimizados, criptografados em repouso,
+  retencao configuravel, direitos do titular implementados.
+- **Provider pattern**: tudo que fala com mundo externo (carrier, e-mail,
+  SMS, pagamento) e interface plugavel com multiplas implementacoes.
+
+## Idioma do codigo
+
+- Identificadores de codigo, nomes de tabelas, comentarios tecnicos: **ingles**.
+- Conversa com o usuario, README, mensagens de UI por padrao: **PT-PT**
+  (pode ser i18n).

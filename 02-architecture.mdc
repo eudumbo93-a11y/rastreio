@@ -1,0 +1,96 @@
+---
+description: Arquitetura logica, modulos e fluxo end-to-end
+alwaysApply: true
+---
+
+# Arquitetura
+
+## Visao em camadas
+
+```
+[Loja do seller (Shopify, WooCommerce, custom)]
+        │  POST /v1/orders  (API key + HMAC)
+        ▼
+┌─────────────────────────┐
+│      apps/api           │  NestJS, REST publica + privada
+│  - Auth (JWT painel)    │
+│  - API key (HMAC sellers)│
+│  - Rate limit por tenant│
+│  - Validacao Zod        │
+└────────────┬────────────┘
+             │  publica eventos em BullMQ (Redis)
+             ▼
+┌─────────────────────────┐
+│      apps/worker        │
+│  - order.created        │ -> envia "Pedido recebido"
+│  - shipment.create      │ -> chama CarrierProvider.createShipment
+│  - tracking.poll (cron) │ -> chama CarrierProvider.getEvents
+│  - notification.send    │ -> renderiza template + provider e-mail/SMS
+└────────────┬────────────┘
+             │
+             ▼
+       PostgreSQL (multi-tenant) + S3 (anexos/labels)
+
+[apps/tracking]  Next.js SSR  ->  rastreio.{seller}.com/{code}
+[apps/web]       Next.js      ->  painel.dominio.com (login do seller)
+```
+
+## Modulos (NestJS, dentro de apps/api e apps/worker)
+
+| Modulo            | Responsabilidade                                          |
+|-------------------|-----------------------------------------------------------|
+| `tenants`         | Cadastro de seller, planos, settings, dominios            |
+| `auth`            | Login do painel, sessoes, 2FA opcional                    |
+| `api-keys`        | Geracao, rotacao, scopes, hash em repouso                 |
+| `customers`       | Dados pessoais, criptografia, direitos do titular         |
+| `orders`          | Ingestao, state machine, items, idempotencia              |
+| `shipments`       | Vinculo com transportadora, tracking_code                 |
+| `events`          | Linha do tempo de status (immutable append-only)          |
+| `notifications`   | Templates, fila, providers de e-mail/SMS, supressoes      |
+| `carriers`        | CarrierProvider interface + Mock + reais                  |
+| `tracking`        | Endpoint publico read-only para a pagina de rastreio      |
+| `billing`         | Stripe customer/subscription/invoices                     |
+| `webhooks`        | Inbound (transportadora) e outbound (seller)              |
+| `audit`           | Log imutavel de acoes sensiveis                           |
+
+## Multi-tenancy
+
+- Todo registro de dominio carrega `tenant_id` (FK obrigatoria).
+- `PrismaService` injeta middleware que **exige** `tenant_id` em queries
+  cross-tenant; faltou? lanca erro em dev e em prod (fail closed).
+- Subdominio do tracking (`{slug}.rastreio.app`) resolve para `tenant_id`
+  via tabela `tenant_domains`.
+
+## Fluxo end-to-end (caminho feliz)
+
+1. Loja chama `POST /v1/orders` com API key + assinatura HMAC do body.
+2. API valida (Zod + HMAC + idempotency-key), grava `order`, `customer`,
+   `address` em transacao. Resposta `202 Accepted`.
+3. API publica `order.created` na fila.
+4. Worker consome: dispara notificacao "Pedido recebido" (template do tenant,
+   idioma do customer).
+5. Quando seller confirma envio (manual no painel ou via API
+   `POST /v1/orders/:id/shipments`), worker chama
+   `CarrierProvider.createShipment()` -> retorna `tracking_code`.
+6. Worker grava `shipment` e dispara "Encomenda enviada" com link
+   `https://rastreio.{seller}.com/{code}`.
+7. Cron `tracking.poll` consulta `CarrierProvider.getEvents()` a cada N
+   horas (configuravel por carrier). Diff -> grava em `order_events` e
+   notifica nas mudancas relevantes.
+8. Cliente final acessa pagina de rastreio (Next.js SSR), que chama API
+   read-only e renderiza timeline.
+
+## Limites e SLAs
+
+- API publica: p95 < 200ms para ingestao.
+- Notificacoes: enfileiradas em < 1s, despachadas em < 10s (best effort).
+- Polling de carrier: configuravel, default 6h, maximo a cada 1h.
+- Retry com backoff exponencial (1m, 5m, 30m, 2h, 8h, 24h) ate 6 tentativas.
+
+## Seguranca de borda
+
+- TLS sempre. HSTS no painel e tracking.
+- API keys: sao mostradas uma vez no painel; armazenamos `argon2id(hash)`.
+- HMAC obrigatorio em endpoints de ingestao (`X-Signature: sha256=...`).
+- Rate limit por API key (BullMQ + Redis com sliding window).
+- CORS estrito; painel e tracking em dominios separados.

@@ -1,0 +1,125 @@
+---
+description: Padrao CarrierProvider (Mock para dev, Real para producao)
+alwaysApply: true
+---
+
+# CarrierProvider - Padrao Plugavel
+
+Esta e a peca **mais critica** do sistema. Toda a parte de transportadora
+passa por uma unica interface. Hoje usamos um mock; amanha trocamos por
+implementacoes reais sem mexer no resto do codigo.
+
+## Interface
+
+Vive em `packages/carriers/src/types.ts`:
+
+```ts
+export interface TrackingEvent {
+  status: string;          // codigo normalizado
+  occurredAt: Date;        // UTC
+  location?: string;
+  description?: string;
+  raw?: unknown;           // payload original do provider
+}
+
+export interface CreateShipmentInput {
+  orderId: string;
+  tenantId: string;
+  recipient: {
+    name: string;
+    address: { line1: string; line2?: string; city: string;
+               postalCode: string; country: string };
+    phone?: string;
+    email?: string;
+  };
+  weightGrams?: number;
+  serviceCode?: string;    // ex: "ctt-expresso"
+}
+
+export interface CreateShipmentResult {
+  trackingCode: string;
+  labelUrl?: string;
+  providerData?: unknown;
+}
+
+export interface CarrierProvider {
+  readonly id: string;     // "mock" | "ctt" | "dpd" | ...
+  createShipment(input: CreateShipmentInput): Promise<CreateShipmentResult>;
+  getEvents(trackingCode: string): Promise<TrackingEvent[]>;
+}
+```
+
+## Statuses normalizados
+
+Todo provider deve mapear seus codigos para este vocabulario unico:
+
+```
+created → label_created → in_transit → out_for_delivery → delivered
+                                ↘ exception → returned
+                                ↘ cancelled
+```
+
+Mapas vivem em `packages/carriers/src/<provider>/status-map.ts`.
+
+## MockCarrierProvider
+
+Vive em `packages/carriers/src/mock/mock-provider.ts`. Regras:
+
+- `id = "mock"`.
+- `createShipment` gera codigo deterministico estilo CTT: `LX` + 9 digitos +
+  `PT` (ex: `LX482917356PT`). Use hash do `orderId` para ser determinista.
+- `getEvents` simula uma timeline baseada em `now() - createdAt`:
+  - 0h: `label_created` (Centro Logistico Lisboa)
+  - +12h: `in_transit` (Centro de Distribuicao Lisboa)
+  - +36h: `in_transit` (Centro de Distribuicao destino)
+  - +60h: `out_for_delivery`
+  - +72h: `delivered`
+- Datas configuraveis por env (`MOCK_DELIVERY_HOURS=72`).
+
+### Bloqueio de uso em producao (obrigatorio)
+
+No `CarrierFactory`:
+
+```ts
+if (provider === 'mock' && process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_MOCK_CARRIER !== 'true') {
+  throw new Error(
+    'MockCarrierProvider nao pode ser usado em producao. ' +
+    'Configure uma transportadora real no painel do tenant.'
+  );
+}
+```
+
+A flag `ALLOW_MOCK_CARRIER=true` so existe para staging/QA. **Nunca**
+defina em ambiente real de producao.
+
+## Real providers (roadmap)
+
+Cada provider real fica em `packages/carriers/src/<provider>/`:
+
+- `ctt/` - API CTT (auth OAuth2, endpoints REST).
+- `dpd/` - DPD API (token + REST).
+- `gls/` - GLS Web API.
+- `seventeen-track/` - agregador 17Track (recomendado para cobrir varias).
+- `aftership/` - alternativa ao 17Track.
+
+Para os reais:
+- Credenciais ficam em `tenant_carrier_credentials` (criptografadas).
+- Implementam **webhooks de entrada** quando o provider oferece, ao inves
+  de polling (mais barato e quase tempo real). 17Track e AfterShip oferecem.
+- Polling continua como fallback para providers sem webhook.
+
+## Selecao do provider
+
+Por tenant, em `tenant_settings.activeCarrier`. Em dev/staging o seller
+pode escolher `mock`. Em prod, so opcoes reais aparecem no painel.
+
+## Testes
+
+Cada provider tem suite de contrato em `packages/carriers/src/<x>/<x>.test.ts`
+que valida:
+1. `createShipment` retorna codigo nao vazio.
+2. `getEvents` retorna lista ordenada por `occurredAt`.
+3. Cada evento tem `status` no vocabulario normalizado.
+
+Mock e testado tambem para determinismo (mesma entrada → mesma saida).

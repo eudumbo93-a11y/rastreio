@@ -1,0 +1,125 @@
+---
+description: Notification Engine - e-mail, SMS, templates, i18n
+alwaysApply: true
+---
+
+# Notification Engine
+
+## Eventos suportados (event keys)
+
+| Event key             | Quando dispara                             | Canais default |
+|-----------------------|--------------------------------------------|----------------|
+| `order.created`       | Pedido recebido com sucesso                | EMAIL          |
+| `order.confirmed`     | Pagamento confirmado                       | EMAIL          |
+| `shipment.sent`       | Shipment criado (tem tracking_code)        | EMAIL + SMS    |
+| `shipment.in_transit` | Primeiro evento `in_transit`               | EMAIL          |
+| `shipment.out_for_delivery` | Saiu para entrega                    | EMAIL + SMS    |
+| `shipment.delivered`  | Entregue                                   | EMAIL + SMS    |
+| `shipment.exception`  | Falha / atraso / devolucao                 | EMAIL          |
+| `order.cancelled`     | Pedido cancelado                           | EMAIL          |
+
+Eventos so disparam se origem for **real** (system ou carrier). Nunca
+disparar `shipment.sent` sem haver `Shipment` persistido com `trackingCode`.
+
+## Templates
+
+- Vivem em `packages/notifications/templates/<event>/<locale>.mjml` para
+  e-mail e `.txt` para SMS.
+- Sao **defaults globais**. Cada tenant pode sobrescrever em
+  `notification_templates` (banco). Resolucao:
+  `tenant > default global > erro`.
+- Variaveis disponiveis (Handlebars):
+  - `customer.firstName`, `customer.lastName`, `customer.email`
+  - `order.id`, `order.externalId`, `order.total`, `order.currency`
+  - `order.items[]` (sku, name, qty, price)
+  - `shipment.trackingCode`, `shipment.carrier`, `shipment.trackingUrl`
+  - `tenant.name`, `tenant.logoUrl`, `tenant.supportEmail`
+  - `t(key)` helper de i18n para strings basicas
+- MJML e compilado para HTML em build time + cache em memoria.
+
+## Locales
+
+- Default: `pt-PT`.
+- Iniciais suportados: `pt-PT`, `en`, `es`.
+- Resolucao do locale por notificacao:
+  1. `customer.locale` se setado.
+  2. `tenantSettings.defaultLocale`.
+  3. `pt-PT`.
+
+## Pipeline de envio
+
+```
+Worker recebe job notification.send
+  ├─ Carrega Notification + Order + Customer + Tenant
+  ├─ Resolve template (tenant override → default)
+  ├─ Renderiza com Handlebars
+  ├─ Verifica supressoes (bounce, unsubscribe, opt-out)
+  ├─ Verifica rate-limit por destinatario (anti-spam)
+  ├─ Chama EmailProvider.send() ou SmsProvider.send()
+  ├─ Atualiza Notification.status + providerId
+  └─ Em falha: retry com backoff (1m, 5m, 30m, 2h, 8h, 24h)
+```
+
+## Providers de e-mail
+
+Interface `EmailProvider` em `packages/notifications/src/email/types.ts`:
+
+```ts
+interface EmailProvider {
+  send(input: {
+    from: { email: string; name?: string };
+    to: { email: string; name?: string };
+    subject: string;
+    html: string;
+    text: string;
+    headers?: Record<string, string>;
+    tags?: string[];
+  }): Promise<{ providerId: string }>;
+}
+```
+
+Implementacoes:
+- `ResendProvider` (default).
+- `SesProvider` (fallback / alta escala).
+
+### Dominios verificados
+
+- Cada tenant verifica seu dominio de envio (DKIM + SPF + DMARC) via API
+  do provider de e-mail.
+- Em `TenantSettings.domainVerified = false`, enviamos com remetente
+  generico do SaaS (`no-reply@notify.dominio-saas.com`) ate o seller verificar.
+- Painel mostra os registros DNS necessarios e testa em tempo real.
+
+## Providers de SMS
+
+Interface `SmsProvider`:
+
+```ts
+interface SmsProvider {
+  send(input: {
+    to: string;       // E.164 (ex: +351912345678)
+    body: string;     // ate 160 chars idealmente, splittavel
+    from?: string;    // sender id, depende do provider/pais
+  }): Promise<{ providerId: string }>;
+}
+```
+
+Implementacoes: `MessageBirdProvider` (default), `TwilioProvider`.
+
+## Anti-abuso e compliance
+
+- **Unsubscribe link** obrigatorio em todo e-mail transacional (mesmo
+  sendo pos-venda, e boa pratica).
+- **List-Unsubscribe header** (`one-click`).
+- **Supression list** por tenant: bounces hard e queixas viram supressao
+  automatica via webhook do provider.
+- **Rate limit** por destinatario: maximo 1 notificacao do mesmo evento
+  por (orderId, event) - idempotencia.
+- SMS so enviado para clientes com `phone` valido E2.164 e idealmente com
+  consentimento registrado no momento do checkout (campo do payload).
+
+## Logs e observabilidade
+
+- Cada `send()` loga: `tenantId`, `orderId`, `event`, `channel`,
+  `providerId`, `latencyMs`, `status`. Nunca logar conteudo do template
+  renderizado nem dados pessoais.

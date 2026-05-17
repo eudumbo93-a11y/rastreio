@@ -1,0 +1,205 @@
+---
+description: Modelo de dados (Prisma) e regras de persistencia
+alwaysApply: true
+---
+
+# Modelo de Dados
+
+Todas as tabelas multi-tenant carregam `tenantId`. PKs sao `cuid()` ou
+`uuid()`. Datas em `timestamptz` (UTC).
+
+## Schema resumido (Prisma)
+
+```prisma
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  plan         Plan     @default(FREE)
+  region       String   @default("eu-west-1")
+  createdAt    DateTime @default(now())
+  settings     TenantSettings?
+  apiKeys      ApiKey[]
+  customers    Customer[]
+  orders       Order[]
+  templates    NotificationTemplate[]
+  domains      TenantDomain[]
+}
+
+model TenantSettings {
+  tenantId        String   @id
+  senderEmail     String?
+  senderDomain    String?
+  domainVerified  Boolean  @default(false)
+  defaultLocale   String   @default("pt-PT")
+  timezone        String   @default("Europe/Lisbon")
+  pollingHours    Int      @default(6)
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+}
+
+model TenantDomain {
+  id        String  @id @default(cuid())
+  tenantId  String
+  hostname  String  @unique          // ex: rastreio.lojadocliente.pt
+  verified  Boolean @default(false)
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+}
+
+model ApiKey {
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
+  prefix     String   // mostra "sk_live_abcd..." ofuscado no painel
+  keyHash    String   // argon2id
+  scopes     String[] // ["orders:write","orders:read",...]
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  @@index([tenantId])
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  tenantId    String
+  email       String
+  phoneEnc    Bytes?   // criptografado (pgcrypto/KMS)
+  docEnc      Bytes?   // NIF / ID nacional, criptografado
+  firstName   String?
+  lastName    String?
+  locale      String   @default("pt-PT")
+  createdAt   DateTime @default(now())
+  addresses   Address[]
+  orders      Order[]
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+model Address {
+  id          String  @id @default(cuid())
+  customerId  String
+  line1       String
+  line2       String?
+  city        String
+  postalCode  String
+  country     String  // ISO 3166-1 alpha-2 (ex: "PT")
+  customer    Customer @relation(fields: [customerId], references: [id])
+}
+
+model Order {
+  id           String       @id @default(cuid())
+  tenantId     String
+  customerId   String
+  externalId   String       // id do pedido na loja do seller
+  status       OrderStatus  @default(CREATED)
+  currency     String       // ISO 4217 (EUR)
+  totalCents   Int
+  metadata     Json?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  items        OrderItem[]
+  shipments    Shipment[]
+  events       OrderEvent[]
+  notifications Notification[]
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  @@unique([tenantId, externalId])  // idempotencia
+  @@index([tenantId, status])
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   String
+  sku       String
+  name      String
+  qty       Int
+  priceCents Int
+  order     Order  @relation(fields: [orderId], references: [id])
+}
+
+model Shipment {
+  id            String   @id @default(cuid())
+  orderId       String
+  carrier       String   // "mock" | "ctt" | "dpd" | "gls" | "17track"
+  trackingCode  String
+  labelUrl      String?
+  providerData  Json?    // resposta crua do provider
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id])
+  @@index([trackingCode])
+}
+
+model OrderEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  status      String   // codigo normalizado (ex: "in_transit")
+  source      String   // "system" | "carrier" | "manual"
+  occurredAt  DateTime
+  location    String?
+  description String?
+  raw         Json?
+  createdAt   DateTime @default(now())
+  order       Order    @relation(fields: [orderId], references: [id])
+  @@index([orderId, occurredAt])
+}
+
+model NotificationTemplate {
+  id        String  @id @default(cuid())
+  tenantId  String
+  channel   Channel              // EMAIL | SMS
+  event     String               // "order.created" | "shipment.sent" ...
+  locale    String               // "pt-PT" | "en" | "es"
+  subject   String?              // so EMAIL
+  body      String               // MJML para EMAIL, texto para SMS
+  enabled   Boolean @default(true)
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  @@unique([tenantId, channel, event, locale])
+}
+
+model Notification {
+  id          String     @id @default(cuid())
+  orderId     String
+  channel     Channel
+  event       String
+  status      NotificationStatus @default(QUEUED)
+  providerId  String?
+  error       String?
+  sentAt      DateTime?
+  order       Order      @relation(fields: [orderId], references: [id])
+  @@index([orderId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  @@index([tenantId, createdAt])
+}
+
+enum Plan { FREE STARTER GROWTH SCALE }
+enum OrderStatus { CREATED CONFIRMED PREPARING SHIPPED IN_TRANSIT
+                   OUT_FOR_DELIVERY DELIVERED RETURNED CANCELLED }
+enum Channel { EMAIL SMS }
+enum NotificationStatus { QUEUED SENDING SENT FAILED SUPPRESSED }
+```
+
+## Regras de persistencia
+
+- **Idempotencia em ingestao**: `(tenantId, externalId)` unico. Repetir o
+  POST com mesmo `externalId` retorna o pedido existente (200) em vez de
+  criar duplicata.
+- **OrderEvent e append-only**: nunca update/delete; correcoes viram novos
+  eventos com `source = "manual"` e descricao explicativa.
+- **Soft delete**: nao usamos. Para GDPR, deletamos de fato e mantemos
+  registro em `AuditLog` com hash do dado removido (sem o dado em si).
+- **Campos criptografados** (`phoneEnc`, `docEnc`): tipo `Bytes`,
+  envelope encryption (AES-256-GCM com chave por tenant, chave-mestra em KMS).
+  Nunca logar valores descriptografados.
+- **Migracoes**: sempre via `prisma migrate`. Nao editar migracoes ja
+  aplicadas - criar novas.

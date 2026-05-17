@@ -1,0 +1,103 @@
+---
+description: GDPR, seguranca de dados pessoais e auditoria
+alwaysApply: true
+---
+
+# Compliance, GDPR e Seguranca
+
+## Bases legais (GDPR Art. 6)
+
+- **Execucao de contrato** (Art. 6(1)(b)): processar nome, endereco,
+  e-mail, telefone, documento (NIF) para entregar a encomenda do seller.
+- **Interesse legitimo** (Art. 6(1)(f)): logs tecnicos e seguranca.
+- **Consentimento** (Art. 6(1)(a)): SMS marketing, se houver. Pos-venda
+  transacional cai em (b), nao precisa de opt-in mas deve oferecer opt-out.
+
+Cada tipo de processamento esta documentado no painel do seller; ele e o
+**Controller**, o SaaS e o **Processor**. Vamos providenciar um **DPA**
+(Data Processing Agreement) padrao para os sellers assinarem no onboarding.
+
+## Princpios obrigatorios
+
+1. **Minimizacao**: nao coletamos dado nao usado. Se nao precisamos do CPF,
+   nao pedimos.
+2. **Criptografia em repouso**: telefone e documento sempre criptografados
+   (`Bytes` no Postgres, AES-256-GCM com chave por tenant gerenciada por KMS).
+3. **TLS em transito**: sempre. HSTS no painel/tracking.
+4. **Retencao configuravel**: default 24 meses apos `delivered` ou
+   `cancelled`. Cron limpa automaticamente.
+5. **Regiao de dados**: banco e providers em **eu-west-1** (Irlanda) ou
+   **eu-central-1** (Frankfurt). Nada sai da UE sem mecanismo formal
+   (SCCs ou adequacy decision).
+6. **Sub-processadores**: lista publica em `/legal/subprocessors`. Hoje:
+   Resend (UE region), MessageBird (NL), Stripe (LU), AWS (eu-west-1).
+
+## Direitos do titular (Arts. 15-22)
+
+Todos implementados via API e painel:
+
+| Direito           | Endpoint                                    |
+|-------------------|---------------------------------------------|
+| Acesso            | `GET /v1/customers/:id/export` (JSON+ZIP)   |
+| Retificacao       | `PATCH /v1/customers/:id`                   |
+| Apagamento        | `DELETE /v1/customers/:id`                  |
+| Portabilidade     | export em JSON estruturado                  |
+| Oposicao          | endpoint de unsubscribe / opt-out de SMS    |
+| Restricao         | flag `processing_restricted` no Customer    |
+
+Apagamento real (nao soft-delete). Mantemos no `AuditLog` apenas hash do
+e-mail + orderIds afetados, sem PII.
+
+## Logs e observabilidade (anti-PII)
+
+- Logger Pino com **redact paths** configurados:
+  ```
+  redact: ['*.password', '*.token', 'req.headers.authorization',
+           '*.cpf', '*.nif', '*.phone', '*.email']
+  ```
+- Nunca logar body raw de pedidos. Logar so `tenantId`, `orderId` e
+  contadores.
+- Sentry com `beforeSend` que limpa PII de stack traces.
+
+## Auditoria
+
+Tabela `AuditLog` registra:
+- Acoes em ApiKey (criar, rotacionar, revogar).
+- Login no painel (incluindo IP e User-Agent hashados).
+- Acesso a dados de cliente individual no painel (zero-trust).
+- Mudancas em templates de notificacao.
+- Exclusao de customer (GDPR).
+
+Logs sao append-only. Nao ha rota de delete.
+
+## Seguranca de aplicacao
+
+- **Auth do painel**: sessao httpOnly + SameSite=Lax, rotacao de session.
+  2FA TOTP opcional (recomendado para Owners).
+- **API keys**: prefixo visivel `sk_live_` / `sk_test_`, hash argon2id no
+  banco. Mostradas em texto claro **uma vez** na criacao.
+- **HMAC** (`X-Signature: sha256=...`) obrigatorio em ingestao de pedidos.
+  Janela de tempo: 5 minutos (`X-Timestamp` evita replay).
+- **Rate limit**: por API key (sliding window em Redis).
+- **CSP** estrita no painel e tracking.
+- **Dependabot/Renovate** + `pnpm audit` no CI.
+- **Secret scanning** no repositorio (GitHub).
+- **Cofre de secrets** em prod: AWS Secrets Manager / Doppler.
+
+## Backups e disaster recovery
+
+- Backup automatico do Postgres diario, retencao 30 dias.
+- Teste de restore mensal (documentado).
+- RPO 24h / RTO 4h no plano inicial.
+
+## Termos com sellers
+
+No onboarding o seller aceita:
+1. Termos de uso.
+2. DPA (anexo I com sub-processadores, anexo II com medidas tecnicas).
+3. Politica anti-fraude que **proibe explicitamente**:
+   - Enviar pos-venda para encomendas que nao existem.
+   - Usar codigos de rastreio mock em comunicacoes a clientes finais reais.
+   - Coletar dados pessoais sob falsa finalidade.
+
+Violacoes geram suspensao da conta apos investigacao do time de Trust & Safety.

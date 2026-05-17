@@ -1,0 +1,135 @@
+---
+description: Roadmap detalhado de implementacao em fases
+alwaysApply: true
+---
+
+# Roadmap de Implementacao
+
+Cada fase deve ser concluida e mergeada antes de comecar a proxima.
+Use branches `feat/<fase>-<resumo>` e PRs pequenos.
+
+## Fase 0 - Fundacao do monorepo (1-2 dias)
+
+- [ ] `pnpm init` + `pnpm-workspace.yaml` + `turbo.json`.
+- [ ] Estrutura `apps/` e `packages/` conforme `01-tech-stack.mdc`.
+- [ ] `packages/tsconfig` com bases (`base.json`, `nextjs.json`, `nestjs.json`).
+- [ ] ESLint + Prettier compartilhados.
+- [ ] Husky + lint-staged.
+- [ ] `docker-compose.yml` com Postgres + Redis para dev.
+- [ ] `.env.example` na raiz e em cada app.
+- [ ] CI no GitHub Actions: install + typecheck + lint + test.
+
+## Fase 1 - Banco e contratos (2-3 dias)
+
+- [ ] `packages/db` com Prisma schema completo (`03-data-model.mdc`).
+- [ ] Migracao inicial.
+- [ ] Seeds para dev (1 tenant demo + 1 API key + 5 pedidos).
+- [ ] `packages/contracts` com schemas Zod dos DTOs publicos.
+- [ ] `packages/config` com loader de env tipado (Zod).
+
+## Fase 2 - API publica minima (3-5 dias)
+
+- [ ] `apps/api` NestJS bootstrap.
+- [ ] Modulos: `tenants`, `api-keys`, `auth`.
+- [ ] Middleware HMAC + idempotency-key.
+- [ ] `POST /v1/orders` (cria order + customer + address em transacao).
+- [ ] `GET /v1/orders/:id` (read-only para o seller).
+- [ ] Rate limit por API key.
+- [ ] Suite de testes com Supertest.
+
+## Fase 3 - Workers e fila (2-3 dias)
+
+- [ ] `apps/worker` NestJS standalone com BullMQ.
+- [ ] Filas: `orders`, `notifications`, `tracking-poll`.
+- [ ] Job `order.created` -> enfileira notificacao "Pedido recebido".
+- [ ] Health check + dashboard Bull Board (proteger com auth).
+
+## Fase 4 - Notification Engine (4-5 dias)
+
+- [ ] `packages/notifications` com `EmailProvider` interface +
+  `ResendProvider`.
+- [ ] Sistema de templates MJML + Handlebars + i18n (pt-PT, en, es).
+- [ ] Job `notification.send` consumindo da fila com retry.
+- [ ] Webhook de bounce/complaint do Resend -> tabela `Suppression`.
+- [ ] SMS depois: `MessageBirdProvider`.
+- [ ] Testes de render dos templates default.
+
+## Fase 5 - CarrierProvider (Mock) (2-3 dias)
+
+- [ ] `packages/carriers` com interface (`04-carrier-provider.mdc`).
+- [ ] `MockCarrierProvider` com geracao deterministica.
+- [ ] Bloqueio em producao (env check).
+- [ ] `POST /v1/orders/:id/shipments` cria Shipment via provider.
+- [ ] Job cron `tracking.poll` chama `getEvents` e diff em `OrderEvent`.
+- [ ] Disparo de notificacoes nas mudancas relevantes.
+
+## Fase 6 - Pagina publica de rastreio (3-4 dias)
+
+- [ ] `apps/tracking` Next.js 15.
+- [ ] Resolucao de tenant por subdominio.
+- [ ] Rota `/{trackingCode}` SSR consulta API read-only.
+- [ ] Timeline visual (status, data, local).
+- [ ] White-label: logo, cores, support email do tenant.
+- [ ] Suporte a domain customizado (Cloudflare for SaaS / Vercel Domains).
+
+## Fase 7 - Painel do seller (5-7 dias)
+
+- [ ] `apps/web` Next.js 15 com Auth.js.
+- [ ] Onboarding: criar tenant, escolher slug, aceitar DPA.
+- [ ] Dashboard: pedidos recentes, KPIs.
+- [ ] Pagina de Pedido: detalhes + timeline + reenviar notificacao.
+- [ ] CRUD de API keys (mostrar segredo so na criacao).
+- [ ] Editor de templates de notificacao por evento + locale.
+- [ ] Configuracoes: domain de envio, dominio de tracking, locale, timezone.
+- [ ] Verificacao de DKIM/SPF/DMARC com checagem ao vivo.
+
+## Fase 8 - Billing (3-4 dias)
+
+- [ ] `billing` module com Stripe.
+- [ ] Onboarding cria Customer no Stripe.
+- [ ] Planos por volume (FREE/STARTER/GROWTH/SCALE) com price IDs.
+- [ ] Webhook de eventos do Stripe.
+- [ ] Pagina de billing no painel: plano, faturas, metodo de pagamento.
+- [ ] Stripe Tax para IVA correto na UE.
+
+## Fase 9 - GDPR e auditoria (2-3 dias)
+
+- [ ] Endpoints de export e delete de Customer.
+- [ ] AuditLog em todas as acoes sensiveis.
+- [ ] Pino com redact paths configurados.
+- [ ] Sentry com beforeSend.
+- [ ] Pagina publica `/legal/subprocessors`.
+- [ ] DPA padrao em PDF + aceite no onboarding.
+
+## Fase 10 - Hardening e observabilidade (2-3 dias)
+
+- [ ] OpenTelemetry traces (api -> worker -> carrier).
+- [ ] Dashboards: Grafana/Datadog.
+- [ ] Alertas: erro > 1% em notificacoes, fila > 1000 jobs, provider down.
+- [ ] Backups automatizados validados.
+- [ ] Pen test interno basico.
+
+## Fase 11 - Carriers reais (continuo)
+
+- [ ] `packages/carriers/src/seventeen-track` (cobre dezenas em 1 integracao).
+- [ ] `packages/carriers/src/ctt` (Portugal nativo).
+- [ ] `packages/carriers/src/dpd`.
+- [ ] Webhook de eventos quando suportado (substitui polling).
+- [ ] Painel: seller escolhe provider e fornece credenciais.
+
+## Fase 12 - Crescimento (depois)
+
+- Plugin Shopify oficial.
+- Plugin WooCommerce.
+- API de etiquetas (gerar PDF de envio).
+- Multi-usuario por tenant + RBAC.
+- Webhooks outbound configuraveis (cliente recebe eventos).
+
+## Definicao de pronto (cada fase)
+
+- [ ] Codigo com tipos estritos, sem `any`.
+- [ ] Testes unit + integracao cobrindo caminho feliz e principais erros.
+- [ ] Documentado no README do app/pacote.
+- [ ] PR pequeno (<400 linhas idealmente), revisado.
+- [ ] CI verde.
+- [ ] Migracoes Prisma aplicadas em staging.

@@ -1,0 +1,86 @@
+---
+description: Stack oficial, ferramentas e estrutura do monorepo
+alwaysApply: true
+---
+
+# Tech Stack e Estrutura
+
+## Stack oficial
+
+| Camada           | Escolha                                              |
+|------------------|------------------------------------------------------|
+| Linguagem        | TypeScript (strict) em todo o monorepo               |
+| Backend (API)    | NestJS 10+                                           |
+| ORM              | Prisma                                               |
+| Banco            | PostgreSQL 16+                                       |
+| Fila / jobs      | BullMQ + Redis                                       |
+| Frontend painel  | Next.js 15 (App Router) + React 19                   |
+| Frontend tracking| Next.js 15 (SSR, multi-tenant por subdominio)        |
+| Estilos / UI     | Tailwind CSS + shadcn/ui                             |
+| Auth do painel   | Auth.js (NextAuth) ou Clerk                          |
+| Validacao        | Zod (compartilhado entre API e front via package)    |
+| E-mail           | Resend (default) ou AWS SES (eu-west-1) como fallback|
+| Templates e-mail | MJML compilado para HTML                             |
+| SMS              | MessageBird (default) ou Twilio                      |
+| Pagamento        | Stripe (com Stripe Tax para IVA da UE) ou Mollie     |
+| Observabilidade  | OpenTelemetry + Sentry + Pino (logs estruturados)    |
+| Testes           | Vitest (unit), Supertest (API), Playwright (e2e)     |
+| Hospedagem inicial| Railway/Render -> AWS eu-west-1 ou Hetzner Cloud    |
+| Container        | Docker + docker-compose para dev local               |
+| CI/CD            | GitHub Actions                                       |
+
+## Estrutura do monorepo
+
+```
+saas-de-rastreio/
+├── apps/
+│   ├── api/           # NestJS - API publica + privada
+│   ├── worker/        # NestJS standalone - workers BullMQ
+│   ├── web/           # Next.js - painel do seller
+│   └── tracking/      # Next.js - pagina publica de rastreio
+├── packages/
+│   ├── db/            # Prisma schema + client + migrations
+│   ├── contracts/     # Schemas Zod compartilhados (DTOs publicos)
+│   ├── carriers/      # CarrierProvider interface + implementacoes
+│   ├── notifications/ # Templates MJML + render engine + i18n
+│   ├── crypto/        # Helpers de criptografia (KMS / pgcrypto)
+│   ├── config/        # Config centralizada com Zod
+│   └── tsconfig/      # Configs base de TS compartilhadas
+├── infra/
+│   ├── docker/        # Dockerfiles de cada app
+│   └── terraform/     # IaC (quando avancar para prod)
+├── .cursor/rules/     # Regras persistentes (este diretorio)
+├── turbo.json         # Turborepo
+├── pnpm-workspace.yaml
+└── package.json
+```
+
+## Ferramentas
+
+- **Gerenciador de pacotes**: pnpm (com workspaces).
+- **Monorepo**: Turborepo.
+- **Lint/format**: ESLint + Prettier, configs no pacote `@repo/eslint-config`.
+- **Husky + lint-staged**: pre-commit roda lint e typecheck.
+- **Commits**: Conventional Commits (`feat:`, `fix:`, `chore:` etc.).
+
+## Convencoes de codigo
+
+- TypeScript `strict: true`, `noUncheckedIndexedAccess: true`.
+- Path aliases por app/pacote (`@/`, `@repo/db`, etc.).
+- Nunca usar `any`. Use `unknown` + narrow.
+- Nada de logs com `console.log` em codigo de aplicacao - usar Pino.
+- Toda variavel de ambiente passa por schema Zod em `@repo/config`.
+- DTOs publicos da API ficam em `@repo/contracts` para o front consumir tipados.
+- Datas sempre em UTC no banco; conversao no boundary com `date-fns-tz`.
+
+## Comandos esperados (raiz)
+
+```bash
+pnpm install
+pnpm dev         # turbo run dev em paralelo
+pnpm build
+pnpm test
+pnpm lint
+pnpm db:migrate  # prisma migrate dev
+pnpm db:studio
+```
